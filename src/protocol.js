@@ -11,7 +11,7 @@
 //   {t:'snap', p:[{id, n, w, x, y, f, m, e, et}, ...]}   all active players, ~10Hz
 
 const MAP = { W: 1120, H: 840 }; // plaza size (client: PW/PH)
-const CHAR_COUNT = 9;            // client: CN.length
+const CHAR_COUNT = 11;           // client: CN.length
 const EMOTES = ['♥', '♪', '!', '?', '…'];
 const NAME_MAX = 12;
 const DEFAULT_NAME = '플레이어';
