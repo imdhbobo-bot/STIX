@@ -170,7 +170,7 @@ class PvpHub {
     if (!m.p[side].owned.has(w)) return;                       // can only pick what you own
     if (m.mode === 'ranked') {
       if (m.bans[other(side)] === w) return;                   // the opponent banned it for me
-      if (m.teams[side].includes(w)) return;                   // not the same character twice
+      if (m.teams[side].includes(w) && m.p[side].owned.size >= 3) return; // not the same character twice (unless you own fewer than 3)
       this.commitPickR(m, side, w);
       return;
     }
@@ -252,7 +252,8 @@ class PvpHub {
       const pool = [...m.p[other(side)].owned];            // ban something the opponent could actually use
       this.commitBan(m, side, pool.length ? pool[Math.floor(this.rng() * pool.length)] : 0);
     } else if (m.phase === 'pick') {
-      const pool = [...m.p[side].owned].filter((w) => m.bans[other(side)] !== w && !m.teams[side].includes(w));
+      const own = m.p[side].owned.size >= 3;
+      const pool = [...m.p[side].owned].filter((w) => m.bans[other(side)] !== w && (!own || !m.teams[side].includes(w)));
       this.commitPickR(m, side, pool.length ? pool[Math.floor(this.rng() * pool.length)] : 0);
     }
   }
