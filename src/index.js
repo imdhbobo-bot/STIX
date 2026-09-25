@@ -5,6 +5,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const { Room } = require('./room');
 const { PvpHub } = require('./pvp');
+const { Ranking } = require('./ranking');
 const { MAX_MSG_BYTES } = require('./protocol');
 
 const CLIENT_ROOT = path.resolve(__dirname, '..', '..'); // game folder (index.html, css/, js/)
@@ -132,7 +133,10 @@ if (require.main === module) {
   // local dev: only this PC. On a hosting service (PORT or NODE_ENV=production is set) listen on all interfaces.
   const host = process.env.HOST || (process.env.PORT || process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
   const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()) : null;
-  const app = createServer({ port, host, allowedOrigins });
+  // ranked ladder file; on hosts with a disk wipe on redeploy the ladder simply restarts (set DATA_DIR to a persistent path)
+  const room = new Room();
+  const ranking = new Ranking({ file: path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'ranking.json') });
+  const app = createServer({ port, host, allowedOrigins, room, hub: new PvpHub({ room, ranking }) });
   app.listen().then((addr) => {
     const shown = host === '0.0.0.0' ? 'localhost' : host;
     console.log(`STIX server ready`);
