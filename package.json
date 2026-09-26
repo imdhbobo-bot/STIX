@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test/smoke.js && node test/pvp.js && node test/ranking.js"
+    "test": "node test/smoke.js && node test/pvp.js && node test/ranking.js && node test/party.js"
   },
   "engines": {
     "node": ">=18"

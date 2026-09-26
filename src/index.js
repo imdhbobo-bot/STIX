@@ -5,6 +5,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const { Room } = require('./room');
 const { PvpHub } = require('./pvp');
+const { PartyHub } = require('./party');
 const { Ranking } = require('./ranking');
 const { MAX_MSG_BYTES } = require('./protocol');
 
@@ -36,11 +37,12 @@ function createServer({
   room = new Room(),
   log = console.log,
   hub = new PvpHub({ room, log }),
+  party = new PartyHub({ log }),
 } = {}) {
   const server = http.createServer((req, res) => {
     if (req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, room: room.name, players: room.size, pvp: hub.stats }));
+      res.end(JSON.stringify({ ok: true, room: room.name, players: room.size, pvp: hub.stats, party: party.stats }));
       return;
     }
     if (!serveClient || (req.method !== 'GET' && req.method !== 'HEAD')) {
@@ -86,12 +88,14 @@ function createServer({
       try { msg = JSON.parse(data.toString()); } catch { return; }
       if (!msg || typeof msg !== 'object') return;
       if (typeof msg.t === 'string' && msg.t.startsWith('pvp_')) { hub.handle(ws, msg); return; }
+      if (typeof msg.t === 'string' && msg.t.startsWith('pty_')) { party.handle(ws, msg); return; }
       if (ws.pvpBusy && (msg.t === 'state' || msg.t === 'join')) return; // queued / in a pvp match: stay hidden from the plaza
       room.handle(ws, msg);
     });
 
     ws.on('close', () => {
       hub.onClose(ws);
+      party.onClose(ws);
       room.leave(ws);
       log(`- ${p.id} left (${room.size} connected)`);
     });
@@ -111,7 +115,7 @@ function createServer({
   room.start();
 
   return {
-    server, wss, room, hub,
+    server, wss, room, hub, party,
     listen: () => new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => resolve(server.address()));
@@ -119,6 +123,7 @@ function createServer({
     close: () => new Promise((resolve) => {
       clearInterval(hb);
       hub.shutdown();
+      party.shutdown();
       room.stop();
       for (const ws of wss.clients) ws.terminate();
       wss.close(() => server.close(() => resolve()));
