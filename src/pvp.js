@@ -6,16 +6,17 @@ const OPEN = 1; // ws.OPEN
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const other = (side) => (side === 'red' ? 'blue' : 'red');
 const num = (v, lo, hi, d = 0) => { v = Number(v); return Number.isFinite(v) ? clamp(v, lo, hi) : d; };
-const TEAM_SIZE = 3;
+const TEAM_SIZE = 2;
 
-// Real-player 1v1 matchmaking + drafts + in-battle relay. Two modes with separate queues:
+// Real-player 1v1 matchmaking + drafts + in-battle relay. Two modes with separate queues. Both play with a team of
+// TEAM_SIZE (2) characters: a player can swap between them with T during the fight (pvp_ev k:'sw', each character keeps its own
+// hp/gauge), a KO brings the partner in, and a side that loses both characters loses the match.
 //
-//   normal : queue -> match (coin decides who picks first) -> alternating single pick, picks are EXCLUSIVE
-//            -> battle relay -> over (first KO ends the match)
+//   normal : queue -> match (coin decides who picks first) -> alternating picks A B A B, picks are EXCLUSIVE
+//            (nobody may take a character the opponent already has) -> battle relay -> over
 //   ranked : queue -> match -> coin (decides who bans / picks first) -> BAN (1 each, alternating; my ban only
-//            blocks the OPPONENT) -> PICK (3 each, alternating A B A B A B; picks are NOT exclusive, one player
-//            can't pick the same character twice) -> battle relay in RELAY style: a KO sends the next character
-//            of that side in; a side that loses all 3 loses the match
+//            blocks the OPPONENT) -> PICK (2 each, alternating A B A B; picks are NOT exclusive, one player
+//            can't pick the same character twice) -> battle relay
 //
 // The server is the referee for the *flow* (turns, timers, legality, who won). During the battle each client is
 // authoritative for its own fighter; the server only validates and forwards inputs/state to the opponent.
@@ -29,7 +30,8 @@ const TEAM_SIZE = 3;
 //   pvp_in {l,r,g,j,h,a,q,mx,my}   (battle)              pvp_picked {side, w, n}
 //   pvp_st {x,y,hp,u,f}            (battle)              pvp_start {mode, red, blue}   (ranked: arrays of 3)
 //   pvp_ev {k:'ult', x, one}       (battle)              pvp_in / pvp_st / pvp_ev   (relayed)
-//   pvp_dead                       (battle)              pvp_round {loser, idx:{red,blue}}   (ranked, not last)
+//   pvp_ev {k:'sw', i:0|1}  (swap to team slot i)        pvp_start {mode, red, blue}   (arrays of TEAM_SIZE)
+//   pvp_dead                       (battle)              pvp_round {loser, idx:{red,blue}}   (every KO except the last)
 //                                                        pvp_over {winner, reason:'ko'|'leave'}
 //                                                        pvp_cancel {reason}
 class PvpHub {
@@ -139,17 +141,18 @@ class PvpHub {
       m.ti = 0;
       this.turnR(m, 'ban');
     } else {
-      m.phase = 'pick';
-      m.turn = m.first;
-      this.turn(m);
+      m.phase = 'pick';                                        // normal: no bans, straight to the picks
+      m.turns = this.pickTurns(m.first);
+      m.ti = 0;
+      this.turnR(m, 'pick');
     }
   }
 
-  // ---- normal draft (one pick each, exclusive)
-  turn(m) {
-    clearTimeout(m.timer);
-    this.both(m, { t: 'pvp_turn', phase: 'pick', turn: m.turn, ms: this.pickMs });
-    m.timer = setTimeout(() => this.autoPick(m), this.pickMs);
+  // pick order A B A B ... (TEAM_SIZE picks each)
+  pickTurns(first) {
+    const t = [];
+    for (let i = 0; i < TEAM_SIZE; i++) t.push(first, other(first));
+    return t;
   }
 
   hover(ws, msg) {
@@ -170,36 +173,12 @@ class PvpHub {
     if (!m.p[side].owned.has(w)) return;                       // can only pick what you own
     if (m.mode === 'ranked') {
       if (m.bans[other(side)] === w) return;                   // the opponent banned it for me
-      if (m.teams[side].includes(w) && m.p[side].owned.size >= 3) return; // not the same character twice (unless you own fewer than 3)
-      this.commitPickR(m, side, w);
-      return;
-    }
-    if (m.picks[other(side)] === w) return;                    // normal: exclusive
-    this.commit(m, side, w);
+      if (m.teams[side].includes(w) && m.p[side].owned.size >= TEAM_SIZE) return; // not the same character twice (unless you own fewer)
+    } else if (m.teams.red.includes(w) || m.teams.blue.includes(w)) return; // normal: exclusive
+    this.commitPickR(m, side, w);
   }
 
-  autoPick(m) {
-    if (m.phase !== 'pick' || m.mode === 'ranked') return;
-    const side = m.turn, taken = m.picks[other(side)];
-    const pool = [...m.p[side].owned].filter((w) => w !== taken);
-    const w = pool.length ? pool[Math.floor(this.rng() * pool.length)] : (taken === 0 ? 1 : 0);
-    this.commit(m, side, w);
-  }
-
-  commit(m, side, w) {
-    clearTimeout(m.timer);
-    m.picks[side] = w;
-    this.both(m, { t: 'pvp_picked', side, w });
-    if (m.picks.red !== null && m.picks.blue !== null) {
-      m.phase = 'reveal';
-      m.timer = setTimeout(() => this.startBattle(m), this.revealMs);
-    } else {
-      m.turn = other(side);
-      this.turn(m);
-    }
-  }
-
-  // ---- ranked draft: ban, then 3 alternating picks each
+  // ---- draft turns: ranked = ban, then TEAM_SIZE alternating picks each; normal = the picks only
   turnR(m, phase) {
     clearTimeout(m.timer);
     m.turn = m.turns[m.ti];
@@ -225,7 +204,7 @@ class PvpHub {
     m.ti++;
     if (m.ti >= 2) {
       m.phase = 'pick';
-      m.turns = [m.first, other(m.first), m.first, other(m.first), m.first, other(m.first)];
+      m.turns = this.pickTurns(m.first);
       m.ti = 0;
       this.turnR(m, 'pick');
     } else {
@@ -252,20 +231,23 @@ class PvpHub {
       const pool = [...m.p[other(side)].owned];            // ban something the opponent could actually use
       this.commitBan(m, side, pool.length ? pool[Math.floor(this.rng() * pool.length)] : 0);
     } else if (m.phase === 'pick') {
-      const own = m.p[side].owned.size >= 3;
-      const pool = [...m.p[side].owned].filter((w) => m.bans[other(side)] !== w && (!own || !m.teams[side].includes(w)));
-      this.commitPickR(m, side, pool.length ? pool[Math.floor(this.rng() * pool.length)] : 0);
+      let pool;
+      if (m.mode === 'ranked') {
+        const own = m.p[side].owned.size >= TEAM_SIZE;
+        pool = [...m.p[side].owned].filter((w) => m.bans[other(side)] !== w && (!own || !m.teams[side].includes(w)));
+      } else {
+        pool = [...m.p[side].owned].filter((w) => !m.teams.red.includes(w) && !m.teams.blue.includes(w));
+      }
+      let w = pool.length ? pool[Math.floor(this.rng() * pool.length)] : -1;
+      if (w < 0) { w = 0; while (w < CHAR_COUNT && (m.teams.red.includes(w) || m.teams.blue.includes(w))) w++; if (w >= CHAR_COUNT) w = 0; }
+      this.commitPickR(m, side, w);
     }
   }
 
   startBattle(m) {
     if (m.phase !== 'reveal') return;
     m.phase = 'battle';
-    if (m.mode === 'ranked') {
-      this.both(m, { t: 'pvp_start', mode: 'ranked', red: m.teams.red, blue: m.teams.blue });
-    } else {
-      this.both(m, { t: 'pvp_start', mode: 'normal', red: m.picks.red, blue: m.picks.blue });
-    }
+    this.both(m, { t: 'pvp_start', mode: m.mode, red: m.teams.red, blue: m.teams.blue });
   }
 
   // ---- battle relay (validated, size-bounded copies only)
@@ -276,12 +258,14 @@ class PvpHub {
     if (msg.t === 'pvp_in') {
       out = {
         t: 'pvp_in', l: msg.l ? 1 : 0, r: msg.r ? 1 : 0, g: msg.g ? 1 : 0, j: msg.j ? 1 : 0, h: msg.h ? 1 : 0,
-        a: msg.a ? 1 : 0, q: msg.q ? 1 : 0, mx: num(msg.mx, -50, 400, 160), my: num(msg.my, -50, 250, 90),
+        a: msg.a === 2 ? 2 : msg.a ? 1 : 0, q: msg.q === 2 ? 2 : msg.q ? 1 : 0, v: msg.v ? 1 : 0, mx: num(msg.mx, -50, 400, 160), my: num(msg.my, -50, 250, 90),
       };
     } else if (msg.t === 'pvp_st') {
       out = { t: 'pvp_st', x: num(msg.x, -20, 340), y: num(msg.y, -200, 200), hp: num(msg.hp, 0, 5000), u: num(msg.u, 0, 1000), f: Number(msg.f) < 0 ? -1 : 1 };
     } else if (msg.t === 'pvp_ev' && msg.k === 'ult') {
       out = { t: 'pvp_ev', k: 'ult', x: num(msg.x, -20, 340), one: msg.one ? 1 : 0 };
+    } else if (msg.t === 'pvp_ev' && msg.k === 'sw') {
+      out = { t: 'pvp_ev', k: 'sw', i: Number(msg.i) === 1 ? 1 : 0 };      // swap to team slot 0 / 1
     } else return;
     this.send(s.m.p[other(s.side)].ws, out);
   }
@@ -291,16 +275,12 @@ class PvpHub {
     const s = ws.pvp;
     if (!s || s.m.phase !== 'battle') return;
     const { m, side } = s;
-    if (m.mode === 'ranked') {
-      const now = Date.now();
-      if (now - (m.lastDead[side] || 0) < this.roundGuardMs) return; // ignore duplicate reports of the same KO
-      m.lastDead[side] = now;
-      m.deaths[side]++;
-      if (m.deaths[side] >= TEAM_SIZE) { this.over(m, other(side), 'ko'); return; }
-      this.both(m, { t: 'pvp_round', loser: side, idx: { red: m.deaths.red, blue: m.deaths.blue } });
-      return;
-    }
-    this.over(m, other(side), 'ko');
+    const now = Date.now();
+    if (now - (m.lastDead[side] || 0) < this.roundGuardMs) return; // ignore duplicate reports of the same KO
+    m.lastDead[side] = now;
+    m.deaths[side]++;
+    if (m.deaths[side] >= TEAM_SIZE) { this.over(m, other(side), 'ko'); return; }   // lost every character
+    this.both(m, { t: 'pvp_round', loser: side, idx: { red: m.deaths.red, blue: m.deaths.blue } });
   }
 
   over(m, winner, reason) {
@@ -325,7 +305,8 @@ class PvpHub {
     const pts = Math.floor(Number(msg.pts)), old = Math.floor(Number(msg.old));
     if (!id || !Number.isFinite(pts) || !Number.isFinite(old) || pts < 0 || pts > 9999 || old < 0 || old > 9999) return;
     const d = pts - old;
-    if (r.won ? d < 20 || d > 30 : d > 0 || d < -20 || (pts > 0 && d > -10)) return;
+    // win: 40..70 base + streak bonus up to 30; loss: -20..-50, or up to +75 net when the 3-loss underdog refund applies
+    if (r.won ? d < 40 || d > 100 : d < -50 || d > 75) return;
     this.ranking.report({ id, n: sanitizeName(msg.n), pts, won: r.won });
   }
 
