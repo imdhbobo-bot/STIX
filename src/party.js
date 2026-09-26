@@ -36,6 +36,7 @@ class PartyHub {
       case 'pty_start': return this.start(ws);
       case 'pty_pos': return this.pos(ws, msg);
       case 'pty_wave': return this.wave(ws, msg);
+      case 'pty_dmg': return this.dmg(ws, msg);
       default: return undefined;
     }
   }
@@ -80,6 +81,14 @@ class PartyHub {
     const now = Date.now(); if (now - m.lp < 60) return; m.lp = now;
     const f = (v, lo, hi) => { v = Number(v); return Number.isFinite(v) ? clamp(v, lo, hi) : 0; };
     this.broadcast(p, { t: 'pty_pos', i: p.mem.indexOf(m), x: f(msg.x, -50, 400), y: f(msg.y, -50, 400), f: msg.f < 0 ? -1 : 1, w: Number.isInteger(msg.w) ? clamp(msg.w, 0, CHAR_COUNT - 1) : 0, hp: f(msg.hp, 0, 99999), mh: f(msg.mh, 1, 99999), d: msg.d ? 1 : 0 }, ws);
+  }
+
+  // damage dealt to the (shared) enemies: relayed to the other members, who apply it to the same enemy (sid = index in the seeded wave plan)
+  dmg(ws, msg) {
+    const c = ws.pty; if (!c || !c.p.started || !Array.isArray(msg.d)) return; const { p, m } = c;
+    const d = [];
+    for (const e of msg.d.slice(0, 16)) { if (!Array.isArray(e)) continue; const s = Math.floor(Number(e[0])), a = Number(e[1]); if (Number.isInteger(s) && s >= 0 && s < 32 && Number.isFinite(a) && a > 0) d.push([s, clamp(Math.round(a), 1, 99999)]); }
+    if (d.length) this.broadcast(p, { t: 'pty_dmg', i: p.mem.indexOf(m), d }, ws);
   }
 
   wave(ws, msg) {
